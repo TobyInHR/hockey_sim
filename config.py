@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 
 @dataclass
@@ -53,6 +53,20 @@ class SimConfig:
     shift_min: int = 45
     shift_mode: int = 60
     shift_max: int = 90
+    shift_endurance_weight: float = 0.25
+    shift_late_game_minute: int = 35
+    shift_trailing_longer_mult: float = 1.05
+    shift_leading_shorter_mult: float = 0.95
+    shift_pressure_push_mult: float = 1.10
+    shift_pressure_relief_mult: float = 0.92
+    caught_on_pressure_threshold: float = 0.70
+    caught_on_chance: float = 0.12
+    caught_on_extension_mult: float = 1.35
+    stoppage_change_ready_fraction: float = 0.65
+    rolling_change_ready_fraction: float = 0.55
+    dz_low_pressure_change_threshold: float = 0.22
+    toi_guardrails_f: List[Tuple[int, int]] = field(default_factory=lambda: [(1100, 1560), (900, 1320), (720, 1080), (480, 660)])
+    toi_guardrails_d: List[Tuple[int, int]] = field(default_factory=lambda: [(1380, 1560), (1200, 1380), (900, 1140)])
 
     fat_gain_base: float = 0.030
     fat_recover_base: float = 0.022

@@ -479,6 +479,20 @@ def next_shift_length_seconds(rng: random.Random, shift_min: int, shift_mode: in
     return int(round(rng.triangular(shift_min, shift_max, shift_mode)))
 
 
+def guardrail_usage_weight(unit_toi: int, time_so_far: int, bounds: Optional[Tuple[int, int]], full_game_seconds: int) -> float:
+    if not bounds or time_so_far <= 0 or full_game_seconds <= 0:
+        return 1.0
+    projected = (unit_toi / max(1, time_so_far)) * full_game_seconds
+    min_b, max_b = bounds
+    if projected < min_b:
+        gap = clamp((min_b - projected) / max(min_b, 1), 0.0, 0.60)
+        return 1.0 + 0.90 * gap
+    if projected > max_b:
+        gap = clamp((projected - max_b) / max(max_b, 1), 0.0, 0.60)
+        return clamp(1.0 - 0.90 * gap, 0.35, 1.0)
+    return 1.0
+
+
 def apply_bias_and_normalize(base_shares: List[float], bias: List[float]) -> List[float]:
     n = len(base_shares)
     b = bias[:] if bias is not None else [1.0] * n
@@ -500,6 +514,8 @@ def choose_unit_index(
     fatigue_bias_strength: float,
     unit_fatigues: List[float],
     min_weight: float,
+    guardrails: Optional[List[Tuple[int, int]]],
+    full_game_seconds: int,
 ) -> int:
     time_so_far = max(1, time_so_far)
     scores: List[float] = []
@@ -517,6 +533,9 @@ def choose_unit_index(
         w = base * fat_factor
         if i == current_idx:
             w *= repeat_penalty
+
+        bounds = guardrails[i] if guardrails and i < len(guardrails) else None
+        w *= guardrail_usage_weight(unit_toi[i], time_so_far, bounds, full_game_seconds)
 
         scores.append(max(min_weight, w))
 
@@ -536,6 +555,42 @@ def unit_avg_fatigue(team: Team, unit_type: str, idx: int) -> float:
     return avg_fatigue(team.defense[idx])
 
 
+def compute_shift_target_seconds(
+    cfg: SimConfig,
+    rng: random.Random,
+    team: Team,
+    opponent: Team,
+    state: GameState,
+    period_length: int,
+    on_ice: List[Player],
+) -> int:
+    base = next_shift_length_seconds(rng, cfg.shift_min, cfg.shift_mode, cfg.shift_max)
+    endu = sum(r01_player(p, "endurance", 70) for p in on_ice) / max(1, len(on_ice))
+    endurance_factor = clamp(1.0 + cfg.shift_endurance_weight * (endu - 0.5), 0.85, 1.20)
+
+    elapsed = (state.period - 1) * period_length + state.clock
+    context_factor = 1.0
+    if elapsed >= cfg.shift_late_game_minute * 60:
+        diff = team.goals - opponent.goals
+        if diff < 0:
+            context_factor *= cfg.shift_trailing_longer_mult
+        elif diff > 0:
+            context_factor *= cfg.shift_leading_shorter_mult
+
+    pressure_factor = cfg.shift_pressure_push_mult if state.zone == OZ else cfg.shift_pressure_relief_mult
+    pressure_factor = 1.0 + (pressure_factor - 1.0) * state.oz_pressure
+
+    target = base * endurance_factor * context_factor * pressure_factor
+    if state.oz_pressure >= cfg.caught_on_pressure_threshold and rng.random() < cfg.caught_on_chance:
+        target *= cfg.caught_on_extension_mult
+
+    return int(clamp(target, cfg.shift_min * 0.80, cfg.shift_max * 1.50))
+
+
+def average_shift_elapsed(on_ice: List[Player]) -> float:
+    return sum(p.shift_seconds_current for p in on_ice) / max(1, len(on_ice))
+
+
 def apply_line_change(
     cfg: SimConfig,
     pbp: List[str],
@@ -550,6 +605,7 @@ def apply_line_change(
 ) -> None:
     time_so_far = (state.period - 1) * period_length + clock_in_period
     time_so_far = max(1, time_so_far)
+    full_game_seconds = 60 * 60
 
     cur_f = state.home_f_idx if is_home else state.away_f_idx
     cur_d = state.home_d_idx if is_home else state.away_d_idx
@@ -573,12 +629,12 @@ def apply_line_change(
     new_f = choose_unit_index(
         rng, f_shares, team.f_line_toi, time_so_far, cur_f,
         cfg.utilization_strength_f, cfg.repeat_penalty_f, cfg.fatigue_bias_strength_f,
-        f_fats, cfg.min_weight
+        f_fats, cfg.min_weight, cfg.toi_guardrails_f, full_game_seconds
     )
     new_d = choose_unit_index(
         rng, d_shares, team.d_pair_toi, time_so_far, cur_d,
         cfg.utilization_strength_d, cfg.repeat_penalty_d, cfg.fatigue_bias_strength_d,
-        d_fats, cfg.min_weight
+        d_fats, cfg.min_weight, cfg.toi_guardrails_d, full_game_seconds
     )
 
     if new_f == cur_f and new_d == cur_d:
@@ -1001,4 +1057,3 @@ def maybe_switch_goalie(team: Team, period_no: int, goals_against_this_period: i
         team.goalies[1].is_starter = False
         log_event(cfg, pbp, clock, f"GOALIE SWITCH: {team.name} pulls starter {starter.name} -> backup {backup.name} (GA={total_ga} before P3)")
         return
-

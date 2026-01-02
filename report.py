@@ -37,13 +37,13 @@ def print_game_report(gr: GameResult, include_pbp: bool = False, pbp_limit: Opti
 
     def print_skaters(team_name: str) -> None:
         print(f"\n{team_name} SKATERS")
-        header = f"{'Player':18} {'Pos':>3} {'Unit':>4} {'G':>3} {'A':>3} {'xG':>6} {'Att':>4} {'SOG':>4} {'BLK':>4} {'GV':>4} {'TK':>4} {'HIT':>4} {'PIM':>4} {'FO':>7} {'TOI':>6}"
+        header = f"{'Player':18} {'Pos':>3} {'Unit':>4} {'G':>3} {'A':>3} {'xG':>6} {'Att':>4} {'SOG':>4} {'BLK':>4} {'GV':>4} {'TK':>4} {'HIT':>4} {'PIM':>4} {'FO':>7} {'Sh':>4} {'AvgSh':>6} {'TOI':>6}"
         print(header)
         for r in gr.skaters[team_name]:
             print(
                 f"{r['Player'][:18]:18} {r['Pos']:>3} {r['Unit']:>4} {r['G']:>3} {r['A']:>3} {r['xG']:>6.2f} "
                 f"{r['Att']:>4} {r['SOG']:>4} {r['BLK']:>4} {r['GV']:>4} {r['TK']:>4} {r['HIT']:>4} {r['PIM']:>4} "
-                f"{r['FO']:>7} {r['TOI']:>6}"
+                f"{r['FO']:>7} {r['Shifts']:>4} {r['AvgShift']:>6} {r['TOI']:>6}"
             )
 
     def print_goalies(team_name: str) -> None:
