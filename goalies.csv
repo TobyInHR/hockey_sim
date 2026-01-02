@@ -1,0 +1,5 @@
+team,name,is_starter,reflexes,positioning,rebound,control,puck_handling,endurance,mental
+Home,HStart,1,70,85,75,60,90,85,80
+Home,HBack,0,50,75,20,45,50,55,55
+Away,AStart,1,85,80,70,75,80,85,70
+Away,ABack,0,55,45,30,10,25,50,30
