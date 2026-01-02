@@ -22,6 +22,8 @@ from .gameplay import (
     maybe_oz_clear_attempt,
     maybe_switch_goalie,
     next_shift_length_seconds,
+    compute_shift_target_seconds,
+    average_shift_elapsed,
     penalized_id_set,
     pick_blocker,
     pick_misc_stoppage_type,
@@ -53,6 +55,7 @@ from .utils import (
     log_event,
     other_team,
     r01_player,
+    start_shift,
     team_all_players,
 )
 
@@ -97,9 +100,6 @@ def simulate_segment(
         rebound_window=False,
     )
 
-    state.home_next_change = next_shift_length_seconds(rng, cfg.shift_min, cfg.shift_mode, cfg.shift_max)
-    state.away_next_change = next_shift_length_seconds(rng, cfg.shift_min, cfg.shift_mode, cfg.shift_max)
-
     # Starting manpower
     if three_on_three:
         home_target = 3
@@ -107,14 +107,8 @@ def simulate_segment(
     else:
         home_target, away_target = manpower_counts(pens_home, pens_away, home.goalie_pulled, away.goalie_pulled)
 
-    home_on = build_on_ice(home, state.home_f_idx, state.home_d_idx, home_target, penalized_id_set(pens_home), rng)
-    away_on = build_on_ice(away, state.away_f_idx, state.away_d_idx, away_target, penalized_id_set(pens_away), rng)
-
-    # shift counter on start
-    for p in home_on:
-        p.shifts += 1
-    for p in away_on:
-        p.shifts += 1
+        home_on = build_on_ice(home, state.home_f_idx, state.home_d_idx, home_target, penalized_id_set(pens_home), rng)
+        away_on = build_on_ice(away, state.away_f_idx, state.away_d_idx, away_target, penalized_id_set(pens_away), rng)
 
     winner = faceoff(rng, home, away, home_on, away_on)
     state.possession = winner
@@ -125,6 +119,9 @@ def simulate_segment(
     last_clock = 0
     home_goals_seg = 0
     away_goals_seg = 0
+
+    prev_home_ids: set = set()
+    prev_away_ids: set = set()
 
     # goalie-switch tracking per period (regulation only)
     home_ga_this_period = 0
@@ -161,6 +158,21 @@ def simulate_segment(
 
         home_on = build_on_ice(home, state.home_f_idx, state.home_d_idx, home_target, penalized_id_set(pens_home), rng)
         away_on = build_on_ice(away, state.away_f_idx, state.away_d_idx, away_target, penalized_id_set(pens_away), rng)
+
+        home_ids = {id(p) for p in home_on}
+        away_ids = {id(p) for p in away_on}
+
+        if home_ids != prev_home_ids:
+            start_shift(home_on)
+            state.home_shift_target = compute_shift_target_seconds(cfg, rng, home, away, state, period_length, home_on)
+            state.home_next_change = state.clock + state.home_shift_target
+        if away_ids != prev_away_ids:
+            start_shift(away_on)
+            state.away_shift_target = compute_shift_target_seconds(cfg, rng, away, home, state, period_length, away_on)
+            state.away_next_change = state.clock + state.away_shift_target
+
+        prev_home_ids = home_ids
+        prev_away_ids = away_ids
 
         add_toi(home_on, elapsed)
         add_toi(away_on, elapsed)
@@ -200,35 +212,77 @@ def simulate_segment(
         eff_pressure_gain = cfg.pressure_gain_per_sec * (1.0 + cfg.pp_pressure_gain_bonus * pp_bonus)
         update_pressure(state, elapsed, state.zone, eff_pressure_gain, cfg.pressure_decay_per_sec)
 
-        # line changes
-        if state.clock >= state.home_next_change:
-            apply_line_change(cfg, pbp, rng, home, True, state, state.clock, period_length, home_target, away_target)
-            state.home_next_change = state.clock + next_shift_length_seconds(rng, cfg.shift_min, cfg.shift_mode, cfg.shift_max)
+        home_elapsed = average_shift_elapsed(home_on)
+        away_elapsed = average_shift_elapsed(away_on)
 
-        if state.clock >= state.away_next_change:
+        def maybe_rebuild_after_change(is_home: bool) -> None:
+            nonlocal home_on, away_on, home_ids, away_ids, prev_home_ids, prev_away_ids, home_target, away_target
+            if is_home:
+                home_on = build_on_ice(home, state.home_f_idx, state.home_d_idx, home_target, penalized_id_set(pens_home), rng)
+                home_ids = {id(p) for p in home_on}
+                start_shift(home_on)
+                state.home_shift_target = compute_shift_target_seconds(cfg, rng, home, away, state, period_length, home_on)
+                state.home_next_change = state.clock + state.home_shift_target
+                prev_home_ids = home_ids
+            else:
+                away_on = build_on_ice(away, state.away_f_idx, state.away_d_idx, away_target, penalized_id_set(pens_away), rng)
+                away_ids = {id(p) for p in away_on}
+                start_shift(away_on)
+                state.away_shift_target = compute_shift_target_seconds(cfg, rng, away, home, state, period_length, away_on)
+                state.away_next_change = state.clock + state.away_shift_target
+                prev_away_ids = away_ids
+
+        home_ready_time = state.clock >= state.home_next_change
+        away_ready_time = state.clock >= state.away_next_change
+
+        home_ready_context = (state.zone == DZ and state.oz_pressure < cfg.dz_low_pressure_change_threshold and home_elapsed >= cfg.rolling_change_ready_fraction * max(1, state.home_shift_target))
+        away_ready_context = (state.zone == DZ and state.oz_pressure < cfg.dz_low_pressure_change_threshold and away_elapsed >= cfg.rolling_change_ready_fraction * max(1, state.away_shift_target))
+
+        home_caught_on = state.zone == OZ and state.oz_pressure >= cfg.caught_on_pressure_threshold and home_elapsed < 1.20 * max(1, state.home_shift_target) and rng.random() < 0.65
+        away_caught_on = state.zone == OZ and state.oz_pressure >= cfg.caught_on_pressure_threshold and away_elapsed < 1.20 * max(1, state.away_shift_target) and rng.random() < 0.65
+
+        def maybe_stoppage_changes() -> None:
+            if home_elapsed >= cfg.stoppage_change_ready_fraction * max(1, state.home_shift_target):
+                apply_line_change(cfg, pbp, rng, home, True, state, state.clock, period_length, home_target, away_target)
+                maybe_rebuild_after_change(True)
+            if away_elapsed >= cfg.stoppage_change_ready_fraction * max(1, state.away_shift_target):
+                apply_line_change(cfg, pbp, rng, away, False, state, state.clock, period_length, away_target, home_target)
+                maybe_rebuild_after_change(False)
+
+        if (home_ready_time or home_ready_context) and not home_caught_on:
+            apply_line_change(cfg, pbp, rng, home, True, state, state.clock, period_length, home_target, away_target)
+            maybe_rebuild_after_change(True)
+        if (away_ready_time or away_ready_context) and not away_caught_on:
             apply_line_change(cfg, pbp, rng, away, False, state, state.clock, period_length, away_target, home_target)
-            state.away_next_change = state.clock + next_shift_length_seconds(rng, cfg.shift_min, cfg.shift_mode, cfg.shift_max)
+            maybe_rebuild_after_change(False)
 
         # effective probabilities
         eff_turnover = clamp(cfg.base_turnover_prob * (1.0 + 0.18 * state.oz_pressure), 0.01, 0.75)
         eff_turnover *= (1.0 - 0.18 * pp_bonus) * (1.0 + 0.20 * pk_bonus)
+        att_fat = avg_fatigue(home_on if state.possession is home else away_on)
+        def_fat = avg_fatigue(away_on if state.possession is home else home_on)
+        fat_diff = clamp((att_fat - def_fat) / 100.0, -0.50, 0.50)
+        eff_turnover *= clamp(1.0 + 0.35 * fat_diff, 0.70, 1.30)
         eff_turnover = clamp(eff_turnover, 0.01, 0.85)
 
         eff_shot_attempt = clamp(cfg.base_shot_attempt_prob * (1.0 + cfg.pressure_shot_attempt_up * state.oz_pressure), 0.01, 0.99)
         eff_shot_attempt *= (1.0 + cfg.pp_shot_attempt_bonus * pp_bonus)
+        eff_shot_attempt *= clamp(1.0 - 0.25 * (att_fat / 100.0) + 0.12 * (def_fat / 100.0), 0.65, 1.15)
 
-        eff_on_goal_base = clamp(cfg.base_on_goal_prob * (1.0 + cfg.pp_on_goal_bonus * pp_bonus), 0.05, 0.99)
+        eff_on_goal_base = clamp(cfg.base_on_goal_prob * (1.0 + cfg.pp_on_goal_bonus * pp_bonus), 0.05, 0.99) * clamp(1.0 - 0.15 * (att_fat / 100.0), 0.75, 1.05)
         eff_block_base = clamp(cfg.base_shot_blocked_prob * (1.0 + 0.25 * pk_bonus), 0.01, 0.85)
 
         # stoppages
         if state.zone == DZ and rng.random() < cfg.icing_prob_in_dz:
             do_stoppage(cfg, pbp, rng, home, away, state, "icing", DZ, home_on, away_on)
+            maybe_stoppage_changes()
             continue
 
         if rng.random() < stoppage_probability_by_zone(state.zone):
             stype = pick_misc_stoppage_type(rng)
             fzone = state.zone if rng.random() < cfg.misc_faceoff_same_zone_prob else NZ
             do_stoppage(cfg, pbp, rng, home, away, state, stype, fzone, home_on, away_on)
+            maybe_stoppage_changes()
             continue
 
         # turnovers
@@ -245,6 +299,7 @@ def simulate_segment(
             )
             if penalty_called:
                 do_stoppage(cfg, pbp, rng, home, away, state, "penalty", NZ, home_on, away_on)
+                maybe_stoppage_changes()
                 continue
             state.zone = NZ
             continue
@@ -256,6 +311,7 @@ def simulate_segment(
         state.zone = new_zone
         if offside:
             do_stoppage(cfg, pbp, rng, home, away, state, "offside", NZ, home_on, away_on)
+            maybe_stoppage_changes()
             continue
 
         # OZ clear attempt
@@ -499,6 +555,8 @@ def simulate_game_once(cfg: SimConfig, rng: random.Random, home: Team, away: Tea
                 "HIT": p.hits,
                 "PIM": p.pim,
                 "FO": f"{p.faceoff_wins}-{p.faceoff_losses}",
+                "Shifts": p.shifts,
+                "AvgShift": fmt_toi(int(round(p.toi_seconds / max(1, p.shifts)))),
                 "TOI": fmt_toi(p.toi_seconds),
             })
         return rows

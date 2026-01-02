@@ -60,11 +60,13 @@ def team_all_players(team: Team) -> List[Player]:
 def start_shift(players: List[Player]) -> None:
     for p in players:
         p.shifts += 1
+        p.shift_seconds_current = 0
 
 
 def add_toi(players: List[Player], dt: int) -> None:
     for p in players:
         p.toi_seconds += dt
+        p.shift_seconds_current += dt
 
 
 def fatigue_multiplier(p: Player) -> float:

@@ -39,6 +39,7 @@ class Player:
     toi_seconds: int = 0
     shifts: int = 0
     fatigue: float = 0.0   # 0..100
+    shift_seconds_current: int = 0
     xg: float = 0.0
 
 
@@ -131,6 +132,7 @@ class Team:
                 p.toi_seconds = 0
                 p.shifts = 0
                 p.fatigue = 0.0
+                p.shift_seconds_current = 0
                 p.xg = 0.0
 
         for pair in self.defense:
@@ -142,6 +144,7 @@ class Team:
                 p.toi_seconds = 0
                 p.shifts = 0
                 p.fatigue = 0.0
+                p.shift_seconds_current = 0
                 p.xg = 0.0
 
         for g in self.goalies:
@@ -169,6 +172,8 @@ class GameState:
 
     home_next_change: int = 0
     away_next_change: int = 0
+    home_shift_target: int = 0
+    away_shift_target: int = 0
 
     oz_pressure: float = 0.0
     rebound_window: bool = False
