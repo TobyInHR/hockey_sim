@@ -212,6 +212,26 @@ def simulate_segment(
         eff_pressure_gain = cfg.pressure_gain_per_sec * (1.0 + cfg.pp_pressure_gain_bonus * pp_bonus)
         update_pressure(state, elapsed, state.zone, eff_pressure_gain, cfg.pressure_decay_per_sec)
 
+        home_elapsed = average_shift_elapsed(home_on)
+        away_elapsed = average_shift_elapsed(away_on)
+
+        def maybe_rebuild_after_change(is_home: bool) -> None:
+            nonlocal home_on, away_on, home_ids, away_ids, prev_home_ids, prev_away_ids, home_target, away_target
+            if is_home:
+                home_on = build_on_ice(home, state.home_f_idx, state.home_d_idx, home_target, penalized_id_set(pens_home), rng)
+                home_ids = {id(p) for p in home_on}
+                start_shift(home_on)
+                state.home_shift_target = compute_shift_target_seconds(cfg, rng, home, away, state, period_length, home_on)
+                state.home_next_change = state.clock + state.home_shift_target
+                prev_home_ids = home_ids
+            else:
+                away_on = build_on_ice(away, state.away_f_idx, state.away_d_idx, away_target, penalized_id_set(pens_away), rng)
+                away_ids = {id(p) for p in away_on}
+                start_shift(away_on)
+                state.away_shift_target = compute_shift_target_seconds(cfg, rng, away, home, state, period_length, away_on)
+                state.away_next_change = state.clock + state.away_shift_target
+                prev_away_ids = away_ids
+
         home_ready_time = state.clock >= state.home_next_change
         away_ready_time = state.clock >= state.away_next_change
 
